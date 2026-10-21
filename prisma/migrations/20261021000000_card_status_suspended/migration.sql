@@ -1,0 +1,1 @@
+ALTER TYPE "CardStatus" ADD VALUE 'SUSPENDED';

@@ -1,0 +1,564 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum AgencyStatus {
+  PENDING_REVIEW
+  ACTIVE
+  SUSPENDED
+  REJECTED
+  DEREGISTERED
+}
+
+enum MembershipRole {
+  AGENCY_ADMIN
+  AGENCY_STAFF
+}
+
+enum MembershipStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+}
+
+enum AgentStatus {
+  PENDING_REVIEW
+  ACTIVE
+  SUSPENDED
+  REJECTED
+}
+
+enum PropertyStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+  PAUSED
+  ARCHIVED
+  REJECTED
+}
+
+enum PropertyType {
+  HOUSE
+  APARTMENT
+  TOWNHOUSE
+  LAND
+  COMMERCIAL
+  FARM
+  OTHER
+}
+
+enum ListingPurpose {
+  SALE
+  RENT
+  SHORT_STAY
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  CLOSED_WON
+  CLOSED_LOST
+  SPAM
+}
+
+enum CardPlanStatus {
+  DRAFT
+  ACTIVE
+  RETIRED
+}
+
+enum CardStatus {
+  MINTED
+  ASSIGNED
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+  REVOKED
+}
+
+enum CardTermSource {
+  PAYMENT
+  ADMIN_MINT
+}
+
+enum CardTermStatus {
+  ACTIVE
+  REFUNDED
+}
+
+enum PaymentProvider {
+  PAYNOW
+  ADMIN_MANUAL
+}
+
+enum PaymentStatus {
+  INITIATED
+  AWAITING_PAYMENT
+  PAID
+  FAILED
+  CANCELLED
+  REFUNDED
+  REQUIRES_REVIEW
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model User {
+  id                String    @id @default(uuid())
+  name              String
+  email             String    @unique
+  emailVerified     Boolean   @default(false)
+  image             String?
+  globalRole        String    @default("buyer")
+  isSuspended       Boolean   @default(false)
+  twoFactorEnabled  Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  sessions          Session[]
+  accounts          Account[]
+  twoFactor         TwoFactor?
+  memberships       AgencyMembership[]
+  agentProfile      AgentProfile?
+  buyerProfile      BuyerProfile?
+  savedProperties   SavedProperty[]
+  enquiriesAsBuyer  Enquiry[]
+  ownedCards        GoldCard[]
+  payments          Payment[]
+
+  @@index([globalRole])
+  @@index([isSuspended])
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  expiresAt DateTime
+  token     String   @unique
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Account {
+  id                    String    @id @default(uuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?   @db.Text
+  refreshToken          String?   @db.Text
+  idToken               String?   @db.Text
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?   @db.Text
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+}
+
+model Verification {
+  id         String   @id @default(uuid())
+  identifier String
+  value      String   @db.Text
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+}
+
+model TwoFactor {
+  id                   String   @id @default(uuid())
+  userId               String   @unique
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  secret               String   @db.Text
+  backupCodes          String   @db.Text
+  verified             Boolean  @default(false)
+  failedVerificationCount Int    @default(0)
+  lockedUntil          DateTime?
+}
+
+model Agency {
+  id                      String           @id @default(cuid())
+  name                    String
+  eacRegistrationNumber   String           @unique
+  email                   String
+  phone                   String
+  address                 String?
+  logoUrl                 String?
+  status                  AgencyStatus     @default(PENDING_REVIEW)
+  reviewNotes             String?          @db.Text
+  reviewedAt              DateTime?
+  reviewedByUserId        String?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+  memberships             AgencyMembership[]
+  invitations             AgentInvitation[]
+  agents                  AgentProfile[]
+  properties              Property[]
+  enquiries               Enquiry[]
+  cards                   GoldCard[]
+  sponsoredPayments       Payment[]
+
+  @@index([status, createdAt])
+  @@index([name])
+}
+
+model AgencyMembership {
+  id        String           @id @default(cuid())
+  agencyId  String
+  agency    Agency           @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      MembershipRole   @default(AGENCY_STAFF)
+  status    MembershipStatus @default(ACTIVE)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  @@unique([agencyId, userId])
+  @@unique([userId])
+  @@index([userId, status])
+}
+
+model BuyerProfile {
+  id          String       @id @default(cuid())
+  userId      String       @unique
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  searchQuery String?
+  city        String?
+  propertyType PropertyType?
+  purpose     ListingPurpose?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+model AgentInvitation {
+  id                String    @id @default(cuid())
+  agencyId          String
+  agency            Agency    @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  parentAgentId     String?
+  email             String
+  tokenHash         String    @unique
+  invitedByUserId   String
+  expiresAt         DateTime
+  acceptedAt        DateTime?
+  revokedAt         DateTime?
+  revokedByUserId   String?
+  createdAt         DateTime  @default(now())
+
+  @@index([agencyId, email])
+  @@index([agencyId, parentAgentId, createdAt])
+  @@index([expiresAt])
+}
+
+model AgentProfile {
+  id                    String        @id @default(cuid())
+  userId                String        @unique
+  user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agencyId              String
+  agency                Agency        @relation(fields: [agencyId], references: [id], onDelete: Restrict)
+  parentAgentId         String?
+  parentAgent           AgentProfile? @relation("AgentTree", fields: [parentAgentId], references: [id], onDelete: SetNull)
+  subagents             AgentProfile[] @relation("AgentTree")
+  fullName              String
+  phone                 String
+  eacRegistrationNumber String        @unique
+  photoUrl              String?
+  bio                   String?       @db.Text
+  status                AgentStatus   @default(PENDING_REVIEW)
+  reviewNotes           String?       @db.Text
+  reviewedAt            DateTime?
+  reviewedByUserId      String?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  properties            Property[]
+  enquiries             Enquiry[]
+  cards                 GoldCard[]
+  targetedPayments      Payment[] @relation("PaymentTargetAgent")
+
+  @@index([agencyId, status])
+  @@index([parentAgentId])
+}
+
+model Property {
+  id             String          @id @default(cuid())
+  agencyId       String
+  agency         Agency          @relation(fields: [agencyId], references: [id], onDelete: Restrict)
+  agentProfileId String
+  agentProfile   AgentProfile    @relation(fields: [agentProfileId], references: [id], onDelete: Restrict)
+  title          String
+  slug           String          @unique
+  description    String          @db.Text
+  propertyType   PropertyType
+  purpose        ListingPurpose
+  status         PropertyStatus  @default(DRAFT)
+  priceAmount    Decimal?        @db.Decimal(14, 2)
+  priceCurrency  String?
+  bedrooms       Int?
+  bathrooms      Int?
+  floorAreaSqm   Decimal?        @db.Decimal(10, 2)
+  landAreaSqm    Decimal?        @db.Decimal(12, 2)
+  address        String?
+  suburb         String?
+  city           String
+  province       String?
+  country        String          @default("Zimbabwe")
+  latitude       Decimal?        @db.Decimal(10, 7)
+  longitude      Decimal?        @db.Decimal(10, 7)
+  features       Json?
+  publishedAt    DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  images         PropertyImage[]
+  enquiries      Enquiry[]
+  savedBy        SavedProperty[]
+
+  @@index([status, purpose, propertyType, city])
+  @@index([agentProfileId, status])
+  @@index([agencyId, status])
+  @@index([createdAt])
+}
+
+model PropertyImage {
+  id         String   @id @default(cuid())
+  propertyId String
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  objectKey  String   @unique
+  publicUrl  String?
+  altText    String?
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([propertyId, sortOrder])
+}
+
+model SavedProperty {
+  id           String   @id @default(cuid())
+  buyerUserId  String
+  buyerUser    User     @relation(fields: [buyerUserId], references: [id], onDelete: Cascade)
+  propertyId   String
+  property     Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+
+  @@unique([buyerUserId, propertyId])
+  @@index([buyerUserId, createdAt])
+}
+
+model Enquiry {
+  id             String        @id @default(cuid())
+  propertyId     String
+  property       Property      @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  agentProfileId String
+  agentProfile   AgentProfile  @relation(fields: [agentProfileId], references: [id], onDelete: Restrict)
+  agencyId       String
+  agency         Agency        @relation(fields: [agencyId], references: [id], onDelete: Restrict)
+  buyerUserId    String?
+  buyerUser      User?         @relation(fields: [buyerUserId], references: [id], onDelete: SetNull)
+  buyerName      String
+  buyerEmail     String
+  buyerPhone     String?
+  message        String        @db.Text
+  status         LeadStatus    @default(NEW)
+  source         String        @default("marketplace")
+  ipHash         String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([agentProfileId, status, createdAt])
+  @@index([agencyId, status, createdAt])
+  @@index([propertyId, createdAt])
+  @@index([buyerUserId, createdAt])
+}
+
+model CardPlan {
+  id             String         @id @default(cuid())
+  code           String         @unique
+  name           String
+  description    String?
+  durationDays   Int
+  priceAmount    Decimal?       @db.Decimal(10, 2)
+  currency       String         @default("USD")
+  priceApproved  Boolean        @default(false)
+  status         CardPlanStatus @default(DRAFT)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  cards          GoldCard[]
+  payments       Payment[]
+
+  @@index([status, priceApproved])
+}
+
+model GoldCard {
+  id                    String        @id @default(cuid())
+  serial                String        @unique
+  activationCodeHash    String?
+  status                CardStatus    @default(MINTED)
+  planId                String
+  plan                  CardPlan      @relation(fields: [planId], references: [id], onDelete: Restrict)
+  ownerUserId           String?
+  owner                 User?         @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+  agentProfileId        String?
+  agentProfile          AgentProfile? @relation(fields: [agentProfileId], references: [id], onDelete: SetNull)
+  agencyId              String?
+  agency                Agency?       @relation(fields: [agencyId], references: [id], onDelete: SetNull)
+  payments              Payment[]
+  terms                 CardTerm[]
+  durationDaysSnapshot  Int
+  issuedByUserId        String?
+  activatedAt           DateTime?
+  expiresAt              DateTime?
+  revokedAt              DateTime?
+  suspendedAt           DateTime?
+  activationAttempts    Int           @default(0)
+  activationLockedUntil DateTime?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+
+  @@index([ownerUserId, status, expiresAt])
+  @@index([agentProfileId, status, expiresAt])
+  @@index([agencyId, status])
+}
+
+model Payment {
+  id                String          @id @default(cuid())
+  userId            String
+  user              User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  planId            String
+  plan              CardPlan        @relation(fields: [planId], references: [id], onDelete: Restrict)
+  termDays          Int
+  payerAgencyId     String?
+  payerAgency       Agency?         @relation(fields: [payerAgencyId], references: [id], onDelete: Restrict)
+  targetAgentProfileId String?
+  targetAgentProfile AgentProfile?  @relation("PaymentTargetAgent", fields: [targetAgentProfileId], references: [id], onDelete: Restrict)
+  cardId            String?
+  card              GoldCard?       @relation(fields: [cardId], references: [id], onDelete: SetNull)
+  term              CardTerm?
+  provider          PaymentProvider @default(PAYNOW)
+  status            PaymentStatus   @default(INITIATED)
+  idempotencyKey    String          @unique
+  providerReference String?         @unique
+  pollUrl           String?
+  redirectUrl       String?
+  amount            Decimal         @db.Decimal(10, 2)
+  currency          String
+  paidAt            DateTime?
+  verifiedAt        DateTime?
+  failureReason     String?         @db.Text
+  providerPayload   Json?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  @@index([userId, status, createdAt])
+  @@index([payerAgencyId, status, createdAt])
+  @@index([targetAgentProfileId, status, createdAt])
+  @@index([cardId, status, createdAt])
+  @@index([status, createdAt])
+}
+
+model CardTerm {
+  id           String          @id @default(cuid())
+  cardId       String
+  card         GoldCard        @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  paymentId    String?         @unique
+  payment      Payment?        @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  source       CardTermSource
+  status       CardTermStatus  @default(ACTIVE)
+  durationDays Int
+  startsAt     DateTime
+  endsAt       DateTime
+  refundedAt   DateTime?
+  createdAt    DateTime        @default(now())
+
+  @@index([cardId, status, startsAt])
+  @@index([endsAt, status])
+}
+
+model AuditChainHead {
+  id        String   @id @default("global")
+  sequence  BigInt   @default(0)
+  lastHash  String   @default("")
+  updatedAt DateTime @updatedAt
+}
+
+model AuditEvent {
+  id            String   @id @default(cuid())
+  sequence      BigInt   @unique
+  previousHash  String
+  hash          String   @unique
+  actorUserId   String?
+  agencyId      String?
+  action        String
+  entityType    String
+  entityId      String
+  payload       Json
+  occurredAt    DateTime @default(now())
+
+  @@index([agencyId, sequence])
+  @@index([actorUserId, sequence])
+  @@index([entityType, entityId, sequence])
+  @@index([occurredAt])
+}
+
+model AuditCheckpoint {
+  id                 String   @id @default(cuid())
+  fromSequence       BigInt
+  toSequence         BigInt
+  merkleRoot         String
+  signature          String   @db.Text
+  signingKeyId       String
+  signingAlgorithm   String
+  signingPublicKey   String   @db.Text
+  previousRoot       String?
+  archiveObjectKey   String?
+  createdAt          DateTime @default(now())
+  archivedAt         DateTime?
+  verifiedAt         DateTime?
+
+  @@unique([fromSequence, toSequence])
+  @@index([createdAt])
+}
+
+model OutboxMessage {
+  id            String       @id @default(cuid())
+  topic         String
+  aggregateType String
+  aggregateId   String
+  payload       Json
+  status        OutboxStatus @default(PENDING)
+  attempts      Int          @default(0)
+  availableAt   DateTime     @default(now())
+  lockedAt      DateTime?
+  lastError     String?      @db.Text
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([status, availableAt])
+  @@index([aggregateType, aggregateId])
+}
+
+model RateLimitBucket {
+  key       String   @id
+  count     Int      @default(0)
+  resetAt   DateTime
+  updatedAt DateTime @updatedAt
+
+  @@index([resetAt])
+}
