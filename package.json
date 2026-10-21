@@ -17,6 +17,7 @@
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
+    "outbox:drain:agent-invitations": "node --conditions=react-server --import tsx scripts/drain-agent-invitation-outbox.ts",
     "admin:create-account": "tsx scripts/create-admin-account.ts",
     "admin:bootstrap": "tsx scripts/bootstrap-admin.ts"
   },

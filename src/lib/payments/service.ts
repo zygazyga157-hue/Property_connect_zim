@@ -6,7 +6,7 @@ import { prisma } from "@/lib/db";
 import { ApiError } from "@/lib/errors";
 import { appendAuditEvent } from "@/lib/audit/chain";
 import { enqueueOutbox } from "@/lib/outbox";
-import { getPaynowField, initiatePaynowPayment, pollPaynow } from "@/lib/payments/paynow";
+import { getPaynowField, initiatePaynowPayment, paynowFailureForDiagnostics, pollPaynow } from "@/lib/payments/paynow";
 import { expireAgentCards, revokeRefundedPaymentTerm } from "@/lib/services/cards";
 
 export async function createCardCheckout(input: {
@@ -27,7 +27,7 @@ export async function createCardCheckout(input: {
     throw new ApiError(409, "PAYMENT_IN_PROGRESS", "This payment request is already being prepared.");
   }
 
-  let profile = input.targetAgentProfileId
+  const profile = input.targetAgentProfileId
     ? await prisma.agentProfile.findUnique({ where: { id: input.targetAgentProfileId }, include: { agency: true, user: true } })
     : input.payerAgencyId
       ? null
@@ -110,10 +110,14 @@ export async function createCardCheckout(input: {
     });
     return { paymentId, redirectUrl: provider.redirectUrl };
   } catch (error) {
+    const diagnostic = paynowFailureForDiagnostics(error);
     await prisma.$transaction(async (tx) => {
       await tx.payment.update({
         where: { id: paymentId },
-        data: { status: "FAILED", failureReason: "Paynow initiation failed." },
+        data: {
+          status: "FAILED",
+          failureReason: diagnostic ? `Paynow initiation failed: ${diagnostic}` : "Paynow initiation failed.",
+        },
       });
       await appendAuditEvent(tx, {
         actorUserId: input.userId,
@@ -124,6 +128,7 @@ export async function createCardCheckout(input: {
         payload: { reason: "provider_initiation_failed" },
       });
     });
+    if (diagnostic) console.warn("Paynow initiation failed", { reference, reason: diagnostic });
     if (error instanceof ApiError) throw error;
     throw new ApiError(502, "PAYNOW_UNAVAILABLE", "Paynow could not start this payment.");
   }

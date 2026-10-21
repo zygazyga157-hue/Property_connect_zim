@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createInitialAdminSchema,
   emailAddress,
+  leadUpdateSchema,
   passwordConfirmationSchema,
   phoneNumber,
 } from "./schemas";
@@ -27,5 +28,18 @@ describe("account input validation", () => {
   it("validates the operator-created initial admin input", () => {
     expect(createInitialAdminSchema.safeParse({ name: "Platform Operator", email: "ADMIN@EXAMPLE.COM", password: "long-enough-pass", confirmPassword: "long-enough-pass" }).success).toBe(true);
     expect(createInitialAdminSchema.safeParse({ name: "Operator", email: "bad", password: "long-enough-pass", confirmPassword: "long-enough-pass" }).success).toBe(false);
+  });
+});
+
+describe("enquiry workflow input validation", () => {
+  it("accepts status, assignment, follow-up, and internal-note updates", () => {
+    expect(leadUpdateSchema.safeParse({ status: "CONTACTED", assignedAgentProfileId: "clxxxxxxxxxxxxxxxxxxxxxxxx", followUpAt: "2026-10-22T09:00:00.000Z", note: "Called to arrange a viewing." }).success).toBe(true);
+    expect(leadUpdateSchema.safeParse({ assignedAgentProfileId: null, followUpAt: null }).success).toBe(true);
+  });
+
+  it("rejects empty updates and invalid follow-up timestamps", () => {
+    expect(leadUpdateSchema.safeParse({}).success).toBe(false);
+    expect(leadUpdateSchema.safeParse({ followUpAt: "tomorrow morning" }).success).toBe(false);
+    expect(leadUpdateSchema.safeParse({ note: "   " }).success).toBe(false);
   });
 });

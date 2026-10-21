@@ -110,7 +110,12 @@ export const buyerProfileSchema = z.object({
 export const savedPropertySchema = z.object({ propertyId: z.string().cuid() });
 
 export const leadUpdateSchema = z.object({
-  status: z.enum(["NEW", "CONTACTED", "QUALIFIED", "CLOSED_WON", "CLOSED_LOST", "SPAM"]),
+  status: z.enum(["NEW", "CONTACTED", "QUALIFIED", "CLOSED_WON", "CLOSED_LOST", "SPAM"]).optional(),
+  assignedAgentProfileId: z.string().cuid().nullable().optional(),
+  followUpAt: z.iso.datetime().nullable().optional(),
+  note: z.string().trim().min(1).max(2000).optional(),
+}).refine((value) => value.status !== undefined || value.assignedAgentProfileId !== undefined || value.followUpAt !== undefined || value.note !== undefined, {
+  message: "Provide an enquiry update.",
 });
 export const agencyPropertyStatusSchema = z.object({ status: z.enum(["PUBLISHED", "ARCHIVED"]) });
 

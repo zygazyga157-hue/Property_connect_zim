@@ -251,11 +251,15 @@ export async function createPublicEnquiry(input: {
     const record = await tx.enquiry.create({
       data: {
         propertyId: property.id, agencyId: property.agencyId, agentProfileId: property.agentProfileId,
+        assignedAgentProfileId: property.agentProfileId,
         buyerUserId: input.buyerUser?.id,
         buyerName, buyerEmail: buyerEmail.toLowerCase(), buyerPhone: input.buyerPhone,
         message: input.message, ipHash: input.ip ? hashClientIp(input.ip) : undefined,
       },
       select: { id: true, createdAt: true },
+    });
+    await tx.enquiryActivity.create({
+      data: { enquiryId: record.id, actorUserId: input.buyerUser?.id, action: "ENQUIRY_RECEIVED" },
     });
     await appendAuditEvent(tx, {
       actorUserId: input.buyerUser?.id, agencyId: property.agencyId, action: "enquiry.received", entityType: "Enquiry", entityId: record.id,
@@ -283,45 +287,94 @@ export async function listLeads(user: CurrentUser) {
     }
     const visibleAgentIds = [profile.id, ...profile.subagents.map((agent) => agent.id)];
     return prisma.enquiry.findMany({
-      where: { agentProfileId: { in: visibleAgentIds } }, orderBy: { createdAt: "desc" }, take: 100,
-      include: { property: { select: { id: true, title: true, slug: true } }, agentProfile: { select: { id: true, fullName: true } } },
+      where: { assignedAgentProfileId: { in: visibleAgentIds } }, orderBy: { createdAt: "desc" }, take: 100,
+      include: {
+        property: { select: { id: true, title: true, slug: true } },
+        agentProfile: { select: { id: true, fullName: true } },
+        assignedAgentProfile: { select: { id: true, fullName: true } },
+        activities: { orderBy: { createdAt: "desc" }, take: 30, include: { actorUser: { select: { name: true } } } },
+      },
     });
   }
   const agencyMemberships = await prisma.agencyMembership.findMany({
     where: { userId: user.id, status: "ACTIVE" },
-    select: { agencyId: true, agency: { select: { status: true } } },
+    select: { agencyId: true, role: true, agency: { select: { status: true } } },
   });
   const agencyIds = agencyMemberships.filter((membership) => membership.agency.status === "ACTIVE").map((membership) => membership.agencyId);
   if (!agencyIds.length) throw new ApiError(403, "LEAD_ACCESS_DENIED", "You do not have access to these enquiries.");
   return prisma.enquiry.findMany({
     where: { agencyId: { in: agencyIds } }, orderBy: { createdAt: "desc" }, take: 100,
-    include: { property: { select: { id: true, title: true, slug: true } }, agentProfile: { select: { id: true, fullName: true } } },
+    include: {
+      property: { select: { id: true, title: true, slug: true } },
+      agentProfile: { select: { id: true, fullName: true } },
+      assignedAgentProfile: { select: { id: true, fullName: true } },
+      activities: { orderBy: { createdAt: "desc" }, take: 30, include: { actorUser: { select: { name: true } } } },
+    },
   });
 }
 
-export async function updateLead(user: CurrentUser, leadId: string, status: "NEW" | "CONTACTED" | "QUALIFIED" | "CLOSED_WON" | "CLOSED_LOST" | "SPAM") {
+export async function updateLead(user: CurrentUser, leadId: string, input: {
+  status?: "NEW" | "CONTACTED" | "QUALIFIED" | "CLOSED_WON" | "CLOSED_LOST" | "SPAM";
+  assignedAgentProfileId?: string | null;
+  followUpAt?: string | null;
+  note?: string;
+}) {
   const profile = await prisma.agentProfile.findUnique({
     where: { userId: user.id }, include: { subagents: { select: { id: true } } },
   });
   const agencyMemberships = await prisma.agencyMembership.findMany({
     where: { userId: user.id, status: "ACTIVE" },
-    select: { agencyId: true, agency: { select: { status: true } } },
+    select: { agencyId: true, role: true, agency: { select: { status: true } } },
   });
   const agencyIds = agencyMemberships.map((membership) => membership.agencyId);
   const agentIds = profile ? [profile.id, ...profile.subagents.map((agent) => agent.id)] : [];
-  const scope = { OR: [...(agentIds.length ? [{ agentProfileId: { in: agentIds } }] : []), ...(agencyIds.length ? [{ agencyId: { in: agencyIds } }] : [])] };
+  const scope = { OR: [...(agentIds.length ? [{ assignedAgentProfileId: { in: agentIds } }] : []), ...(agencyIds.length ? [{ agencyId: { in: agencyIds } }] : [])] };
   const lead = await prisma.enquiry.findFirst({ where: { id: leadId, ...scope } });
   if (!lead) throw new ApiError(404, "NOT_FOUND", "The requested record was not found.");
   const agencyAccess = agencyMemberships.some((membership) => membership.agencyId === lead.agencyId && membership.agency.status === "ACTIVE");
-  const agentAccess = Boolean(profile && agentIds.some((id) => id === lead.agentProfileId));
+  const agentAccess = Boolean(profile && agentIds.some((id) => id === lead.assignedAgentProfileId));
   if (!agencyAccess && agentAccess) await requireActiveAgent(user);
   else if (!agencyAccess) throw new ApiError(403, "AGENCY_NOT_ACTIVE", "An active agency membership is required to update this enquiry.");
-  return prisma.$transaction(async (tx) => {
-    const updated = await tx.enquiry.update({ where: { id: lead.id }, data: { status } });
-    await appendAuditEvent(tx, {
-      actorUserId: user.id, agencyId: lead.agencyId, action: "enquiry.status_changed",
-      entityType: "Enquiry", entityId: lead.id, payload: { from: lead.status, to: status },
+
+  const agencyMembership = agencyMemberships.find((membership) => membership.agencyId === lead.agencyId && membership.agency.status === "ACTIVE");
+  if (input.assignedAgentProfileId !== undefined && (!agencyMembership || agencyMembership.role !== "AGENCY_ADMIN")) {
+    throw new ApiError(403, "AGENCY_ADMIN_REQUIRED", "Only an agency administrator can assign enquiries.");
+  }
+  if (input.assignedAgentProfileId) {
+    const assignee = await prisma.agentProfile.findFirst({
+      where: { id: input.assignedAgentProfileId, agencyId: lead.agencyId, status: "ACTIVE", agency: { status: "ACTIVE" }, user: { emailVerified: true, isSuspended: false } },
+      select: { id: true },
     });
+    if (!assignee) throw new ApiError(400, "INVALID_ENQUIRY_ASSIGNEE", "Choose an active agent from this agency.");
+  }
+  const assignmentIds = [lead.assignedAgentProfileId, input.assignedAgentProfileId].filter((id): id is string => Boolean(id));
+  const assignmentProfiles = assignmentIds.length ? await prisma.agentProfile.findMany({ where: { id: { in: assignmentIds } }, select: { id: true, fullName: true } }) : [];
+  const assignmentName = (id: string | null | undefined) => assignmentProfiles.find((agent) => agent.id === id)?.fullName ?? "Unassigned";
+
+  const nextFollowUp = input.followUpAt === undefined ? lead.followUpAt : input.followUpAt ? new Date(input.followUpAt) : null;
+  if (input.followUpAt && Number.isNaN(nextFollowUp?.getTime())) throw new ApiError(400, "INVALID_FOLLOW_UP", "Choose a valid follow-up date.");
+  return prisma.$transaction(async (tx) => {
+    const data: { status?: typeof lead.status; assignedAgentProfileId?: string | null; followUpAt?: Date | null } = {};
+    const activities: Array<{ action: string; note?: string; details?: Record<string, string | null> }> = [];
+    if (input.status !== undefined && input.status !== lead.status) {
+      data.status = input.status;
+      activities.push({ action: "STATUS_CHANGED", details: { from: lead.status, to: input.status } });
+      await appendAuditEvent(tx, { actorUserId: user.id, agencyId: lead.agencyId, action: "enquiry.status_changed", entityType: "Enquiry", entityId: lead.id, payload: { from: lead.status, to: input.status } });
+    }
+    if (input.assignedAgentProfileId !== undefined && input.assignedAgentProfileId !== lead.assignedAgentProfileId) {
+      data.assignedAgentProfileId = input.assignedAgentProfileId;
+      activities.push({ action: "ASSIGNED", details: { from: assignmentName(lead.assignedAgentProfileId), to: assignmentName(input.assignedAgentProfileId) } });
+      await appendAuditEvent(tx, { actorUserId: user.id, agencyId: lead.agencyId, action: "enquiry.assigned", entityType: "Enquiry", entityId: lead.id, payload: { from: lead.assignedAgentProfileId, to: input.assignedAgentProfileId } });
+    }
+    if (input.followUpAt !== undefined && nextFollowUp?.getTime() !== lead.followUpAt?.getTime()) {
+      data.followUpAt = nextFollowUp;
+      activities.push({ action: nextFollowUp ? "FOLLOW_UP_SET" : "FOLLOW_UP_CLEARED", details: { at: nextFollowUp?.toISOString() ?? null } });
+      await appendAuditEvent(tx, { actorUserId: user.id, agencyId: lead.agencyId, action: "enquiry.follow_up_changed", entityType: "Enquiry", entityId: lead.id, payload: { at: nextFollowUp?.toISOString() ?? null } });
+    }
+    if (input.note) activities.push({ action: "NOTE_ADDED", note: input.note });
+    if (Object.keys(data).length) await tx.enquiry.update({ where: { id: lead.id }, data });
+    for (const activity of activities) await tx.enquiryActivity.create({ data: { enquiryId: lead.id, actorUserId: user.id, ...activity } });
+    const updated = await tx.enquiry.findUniqueOrThrow({ where: { id: lead.id } });
     return updated;
   });
 }

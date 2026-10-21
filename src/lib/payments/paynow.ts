@@ -1,35 +1,33 @@
 import "server-only";
 
-import { createHash, timingSafeEqual } from "node:crypto";
 import { env, requireConfig } from "@/lib/env";
 import { ApiError } from "@/lib/errors";
+import {
+  buildPaynowRequestFields,
+  isPaynowPollUrl,
+  parsePaynowInitiationResponse,
+  PaynowProtocolError,
+  sanitizePaynowProviderReason,
+  verifyPaynowHash,
+  type PaynowCheckoutInput,
+  type PaynowInitiationResult,
+} from "@/lib/payments/paynow-protocol";
 
+export { generatePaynowHash, getPaynowField, verifyPaynowHash } from "@/lib/payments/paynow-protocol";
 export type PaynowFields = URLSearchParams;
 
-function sha512Upper(value: string): string {
-  return createHash("sha512").update(value, "utf8").digest("hex").toUpperCase();
+export class PaynowRejectedError extends ApiError {
+  constructor(readonly providerReason: string) {
+    super(502, "PAYNOW_REJECTED", "Paynow did not accept this payment request.");
+    this.name = "PaynowRejectedError";
+  }
 }
 
-export function generatePaynowHash(fields: Iterable<[string, string]>, integrationKey: string): string {
-  const content = Array.from(fields)
-    .filter(([key]) => key.toLowerCase() !== "hash")
-    .map(([, value]) => value)
-    .join("");
-  return sha512Upper(content + integrationKey);
-}
-
-export function verifyPaynowHash(fields: URLSearchParams, integrationKey: string): boolean {
-  const supplied = Array.from(fields.entries()).find(([key]) => key.toLowerCase() === "hash")?.[1];
-  if (!supplied || !/^[A-Fa-f0-9]{128}$/.test(supplied)) return false;
-  const expected = generatePaynowHash(fields.entries(), integrationKey);
-  const expectedBytes = Buffer.from(expected, "hex");
-  const suppliedBytes = Buffer.from(supplied, "hex");
-  return expectedBytes.length === suppliedBytes.length && timingSafeEqual(expectedBytes, suppliedBytes);
-}
-
-export function getPaynowField(fields: URLSearchParams, name: string): string | undefined {
-  const target = name.toLowerCase();
-  return Array.from(fields.entries()).find(([key]) => key.toLowerCase() === target)?.[1];
+class PaynowInvalidResponseError extends ApiError {
+  constructor(readonly failureReason: string, message: string) {
+    super(502, "PAYNOW_RESPONSE_INVALID", message);
+    this.name = "PaynowInvalidResponseError";
+  }
 }
 
 function assertPaynowConfigured(): { integrationId: string; key: string } {
@@ -39,28 +37,18 @@ function assertPaynowConfigured(): { integrationId: string; key: string } {
   };
 }
 
-export async function initiatePaynowPayment(input: {
-  reference: string;
-  amount: string;
-  email: string;
-  name: string;
-}): Promise<{ redirectUrl: string; pollUrl: string }> {
+export async function initiatePaynowPayment(input: PaynowCheckoutInput): Promise<{ redirectUrl: string; pollUrl: string }> {
   const { integrationId, key } = assertPaynowConfigured();
   const resultUrl = requireConfig(env.paynowResultUrl, "PAYNOW_RESULT_URL");
   const returnUrl = requireConfig(env.paynowReturnUrl, "PAYNOW_RETURN_URL");
-  const returnUrlWithReference = new URL(returnUrl);
-  returnUrlWithReference.searchParams.set("reference", input.reference);
-  const fields = new URLSearchParams();
-  fields.set("id", integrationId);
-  fields.set("reference", input.reference);
-  fields.set("amount", input.amount);
-  fields.set("additionalinfo", "Property Connect Gold Card");
-  fields.set("returnurl", returnUrlWithReference.toString());
-  fields.set("resulturl", resultUrl);
-  fields.set("authemail", input.email);
-  fields.set("authname", input.name);
-  fields.set("status", "Message");
-  fields.set("hash", generatePaynowHash(fields.entries(), key));
+  const fields = buildPaynowRequestFields(input, {
+    integrationId,
+    integrationKey: key,
+    resultUrl,
+    returnUrl,
+    mode: env.paynowMode,
+    merchantEmail: env.paynowMerchantEmail,
+  });
 
   const response = await fetch("https://www.paynow.co.zw/interface/initiatetransaction", {
     method: "POST",
@@ -70,33 +58,38 @@ export async function initiatePaynowPayment(input: {
   });
   if (!response.ok) throw new ApiError(502, "PAYNOW_UNAVAILABLE", "Paynow could not start this payment.");
 
-  const result = new URLSearchParams(await response.text());
-  if (!verifyPaynowHash(result, key)) {
-    throw new ApiError(502, "PAYNOW_RESPONSE_INVALID", "Paynow returned an unverified response.");
+  let result: PaynowInitiationResult;
+  try {
+    result = parsePaynowInitiationResponse(await response.text(), key);
+  } catch (error) {
+    throw paynowProtocolError(error);
   }
-  if (getPaynowField(result, "status")?.toLowerCase() !== "ok") {
-    throw new ApiError(502, "PAYNOW_REJECTED", "Paynow did not accept this payment request.");
+  if (result.status === "error") {
+    throw new PaynowRejectedError(result.providerReason);
   }
-
-  const redirectUrl = getPaynowField(result, "browserurl");
-  const pollUrl = getPaynowField(result, "pollurl");
-  if (!redirectUrl || !pollUrl || !isPaynowUrl(redirectUrl) || !isPaynowUrl(pollUrl)) {
-    throw new ApiError(502, "PAYNOW_RESPONSE_INVALID", "Paynow returned incomplete payment details.");
-  }
-  return { redirectUrl, pollUrl };
+  return { redirectUrl: result.redirectUrl, pollUrl: result.pollUrl };
 }
 
-function isPaynowUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" && ["www.paynow.co.zw", "staging.paynow.co.zw"].includes(url.hostname);
-  } catch {
-    return false;
-  }
+export function paynowProtocolError(error: unknown): ApiError {
+  if (!(error instanceof PaynowProtocolError)) return new PaynowInvalidResponseError("unknown_protocol_failure", "Paynow returned an invalid response.");
+  const message = error.reason === "INVALID_HASH"
+    ? "Paynow returned an unverified response."
+    : error.reason === "UNTRUSTED_URL"
+      ? "Paynow returned an untrusted payment URL."
+      : error.reason === "INCOMPLETE_DETAILS"
+        ? "Paynow returned incomplete payment details."
+        : "Paynow returned an invalid response status.";
+  return new PaynowInvalidResponseError(error.reason.toLowerCase(), message);
+}
+
+export function paynowFailureForDiagnostics(error: unknown): string | undefined {
+  if (error instanceof PaynowRejectedError) return sanitizePaynowProviderReason(error.providerReason);
+  if (error instanceof PaynowInvalidResponseError) return `Response validation failed: ${error.failureReason}`;
+  return undefined;
 }
 
 export async function pollPaynow(pollUrl: string): Promise<URLSearchParams> {
-  if (!isPaynowUrl(pollUrl)) throw new ApiError(400, "INVALID_POLL_URL", "The payment reference is invalid.");
+  if (!isPaynowPollUrl(pollUrl)) throw new ApiError(400, "INVALID_POLL_URL", "The payment reference is invalid.");
   const { key } = assertPaynowConfigured();
   const response = await fetch(pollUrl, {
     method: "POST",

@@ -126,19 +126,78 @@ export function AgencyPropertyControl({ endpoint, status }: { endpoint: string; 
   return <div className="flex items-center gap-2"><button type="button" disabled={busy} onClick={update} className="min-h-9 border border-graphite-300 px-3 text-xs hover:bg-paper-100">{busy ? "Saving…" : nextStatus === "ARCHIVED" ? "Archive" : "Republish"}</button>{state ? <span role={state.error ? "alert" : "status"} className="text-xs text-ink-500">{state.text}</span> : null}</div>;
 }
 
-export function LeadStatusControl({ endpoint, status }: { endpoint: string; status: string }) {
-  const [value, setValue] = useState(status); const [state, setState] = useState<ResultState>(null); const [busy, setBusy] = useState(false); const router = useRouter();
+type LeadActivity = { id: string; action: string; note: string | null; details: unknown; createdAt: Date | string; actorUser: { name: string } | null };
+type LeadAgent = { id: string; fullName: string };
+
+function localDateTime(value?: string | Date | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 16);
+}
+
+const activityLabels: Record<string, string> = {
+  ENQUIRY_RECEIVED: "Enquiry received", NOTE_ADDED: "Internal note", STATUS_CHANGED: "Status changed",
+  ASSIGNED: "Assignment changed", FOLLOW_UP_SET: "Follow-up scheduled", FOLLOW_UP_CLEARED: "Follow-up cleared",
+};
+
+function activityDetail(activity: LeadActivity) {
+  if (!activity.details || typeof activity.details !== "object") return null;
+  const details = activity.details as Record<string, unknown>;
+  if (activity.action === "STATUS_CHANGED" && typeof details.from === "string" && typeof details.to === "string") {
+    return details.from.replaceAll("_", " ") + " → " + details.to.replaceAll("_", " ");
+  }
+  if (activity.action === "ASSIGNED" && typeof details.to === "string") return "Assigned to " + details.to;
+  if (activity.action === "FOLLOW_UP_SET" && typeof details.at === "string") return "Due " + new Date(details.at).toLocaleString();
+  return null;
+}
+
+export function LeadWorkflowPanel({ endpoint, status, assignedAgentProfileId, followUpAt, followUpOverdue = false, buyerName, buyerEmail, buyerPhone, message, activities, agents = [], canAssign = false }: {
+  endpoint: string; status: string; assignedAgentProfileId: string | null; followUpAt: string | Date | null;
+  followUpOverdue?: boolean;
+  buyerName: string; buyerEmail: string; buyerPhone: string | null; message: string; activities: LeadActivity[];
+  agents?: LeadAgent[]; canAssign?: boolean;
+}) {
+  const [value, setValue] = useState(status);
+  const [assignee, setAssignee] = useState(assignedAgentProfileId ?? "");
+  const [followUp, setFollowUp] = useState(localDateTime(followUpAt));
+  const [note, setNote] = useState("");
+  const [state, setState] = useState<ResultState>(null);
+  const [busy, setBusy] = useState(false);
+  const router = useRouter();
+
   async function update() {
     setBusy(true);
     try {
-      const response = await fetch(endpoint, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: value }) });
+      const response = await fetch(endpoint, {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ status: value, followUpAt: followUp ? new Date(followUp).toISOString() : null, ...(canAssign ? { assignedAgentProfileId: assignee || null } : {}), ...(note.trim() ? { note: note.trim() } : {}) }),
+      });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result?.error?.message ?? "The enquiry could not be updated.");
-      setState({ text: "Enquiry updated." }); router.refresh();
+      setNote(""); setState({ text: "Enquiry updated." }); router.refresh();
     } catch (error) { setState({ text: error instanceof Error ? error.message : "The enquiry could not be updated.", error: true }); }
     finally { setBusy(false); }
   }
-  return <div className="flex flex-wrap items-center gap-2"><label className="sr-only" htmlFor={"lead-status-" + endpoint}>Enquiry status</label><RegistrySelect id={"lead-status-" + endpoint} value={value} onChange={(event) => setValue(event.target.value)} className="min-h-9 min-w-32 px-2 pr-8 text-xs"><option value="NEW">New</option><option value="CONTACTED">Contacted</option><option value="QUALIFIED">Qualified</option><option value="CLOSED_WON">Won</option><option value="CLOSED_LOST">Lost</option><option value="SPAM">Spam</option></RegistrySelect><button type="button" disabled={busy || value === status} onClick={update} className="min-h-9 border border-graphite-300 px-3 text-xs disabled:opacity-50">{busy ? "Saving…" : "Save"}</button>{state ? <span role={state.error ? "alert" : "status"} className="text-xs text-ink-500">{state.text}</span> : null}</div>;
+
+  return <section className="border border-graphite-200 bg-paper-50 p-4 sm:p-5">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div><h2 className="text-sm font-semibold text-ink-900">{buyerName}</h2><p className="mt-1 text-xs text-ink-500">{buyerEmail}{buyerPhone ? " · " + buyerPhone : ""}</p></div>
+      <div className="flex flex-wrap gap-2"><a className="inline-flex min-h-9 items-center border border-graphite-300 px-3 text-xs font-medium text-ink-700 hover:bg-paper-100 focus-visible:outline-2 focus-visible:outline-brand-700" href={"mailto:" + encodeURIComponent(buyerEmail)}>Email buyer</a>{buyerPhone ? <a className="inline-flex min-h-9 items-center border border-graphite-300 px-3 text-xs font-medium text-ink-700 hover:bg-paper-100 focus-visible:outline-2 focus-visible:outline-brand-700" href={"tel:" + encodeURIComponent(buyerPhone)}>Call buyer</a> : null}</div>
+    </div>
+    <blockquote className="mt-4 whitespace-pre-line border-l-2 border-[#c4a44d] bg-paper-100 px-4 py-3 text-sm leading-6 text-ink-700">{message}</blockquote>
+    {followUpAt ? <p className={"mt-3 inline-flex items-center gap-2 border px-2.5 py-1 text-xs font-medium " + (followUpOverdue ? "border-red-300 bg-red-50 text-red-800" : "border-[#dfcc91] bg-[#fff9e9] text-ink-800")}>{followUpOverdue ? "Follow-up overdue" : "Follow-up due"} · {new Date(followUpAt).toLocaleString()}</p> : null}
+    <div className="mt-5 grid gap-4 border-t border-graphite-200 pt-4 lg:grid-cols-[1fr_1fr]">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div><label className="mb-1.5 block text-xs font-medium text-ink-700" htmlFor={"lead-status-" + endpoint}>Status</label><RegistrySelect id={"lead-status-" + endpoint} value={value} onChange={(event) => setValue(event.target.value)} className="min-h-10 w-full px-2 pr-8 text-xs"><option value="NEW">New</option><option value="CONTACTED">Contacted</option><option value="QUALIFIED">Qualified</option><option value="CLOSED_WON">Won</option><option value="CLOSED_LOST">Lost</option><option value="SPAM">Spam</option></RegistrySelect></div>
+        {canAssign ? <div><label className="mb-1.5 block text-xs font-medium text-ink-700" htmlFor={"lead-agent-" + endpoint}>Assigned agent</label><RegistrySelect id={"lead-agent-" + endpoint} value={assignee} onChange={(event) => setAssignee(event.target.value)} className="min-h-10 w-full px-2 pr-8 text-xs"><option value="">Unassigned</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.fullName}</option>)}</RegistrySelect></div> : null}
+        <div><label className="mb-1.5 block text-xs font-medium text-ink-700" htmlFor={"lead-follow-up-" + endpoint}>Follow-up date</label><input id={"lead-follow-up-" + endpoint} type="datetime-local" value={followUp} onChange={(event) => setFollowUp(event.target.value)} className="min-h-10 w-full border border-graphite-300 bg-paper-50 px-2 text-xs text-ink-900 focus-visible:outline-2 focus-visible:outline-brand-700" /></div>
+        <div className="sm:col-span-2"><label className="mb-1.5 block text-xs font-medium text-ink-700" htmlFor={"lead-note-" + endpoint}>Add internal note</label><textarea id={"lead-note-" + endpoint} value={note} onChange={(event) => setNote(event.target.value)} maxLength={2000} rows={2} placeholder="Record a call, viewing, or next step…" className="w-full border border-graphite-300 bg-paper-50 px-3 py-2 text-sm text-ink-900 placeholder:text-ink-400 focus-visible:outline-2 focus-visible:outline-brand-700" /></div>
+        <div className="sm:col-span-2 flex flex-wrap items-center gap-3"><button type="button" disabled={busy} onClick={update} className="inline-flex min-h-10 items-center justify-center border border-brand-700 bg-brand-700 px-4 text-xs font-medium text-white transition-colors hover:bg-brand-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60">{busy ? "Saving…" : "Save enquiry"}</button>{state ? <span role={state.error ? "alert" : "status"} className={"text-xs " + (state.error ? "text-red-800" : "text-ink-500")}>{state.text}</span> : null}</div>
+      </div>
+      <div><h3 className="font-mono text-[10px] uppercase tracking-[.14em] text-ink-500">Activity timeline</h3>{activities.length ? <ol className="mt-3 space-y-3 border-l border-graphite-200 pl-4">{activities.map((activity) => <li key={activity.id} className="relative text-xs"><span className="absolute -left-[21px] top-1 size-2 rounded-full border border-[#b3943c] bg-[#fff7dc]" /><p className="font-medium text-ink-800">{activityLabels[activity.action] ?? activity.action.replaceAll("_", " ").toLowerCase()}</p>{activityDetail(activity) ? <p className="mt-1 text-ink-700">{activityDetail(activity)}</p> : null}{activity.note ? <p className="mt-1 whitespace-pre-line leading-5 text-ink-700">{activity.note}</p> : null}<p className="mt-1 text-ink-500">{activity.actorUser?.name ?? "System"} · {new Date(activity.createdAt).toLocaleString()}</p></li>)}</ol> : <p className="mt-3 text-xs text-ink-500">No follow-up activity has been recorded.</p>}</div>
+    </div>
+  </section>;
 }
 
 export function UserSuspensionControl({ endpoint, isSuspended }: { endpoint: string; isSuspended: boolean }) {
@@ -175,7 +234,7 @@ export function ChainVerifyAction() {
     } catch (error) { setState({ text: error instanceof Error ? error.message : "Verification could not complete.", error: true }); }
     finally { setBusy(false); }
   }
-  return <div className="flex flex-wrap items-center gap-3"><button type="button" onClick={verify} disabled={busy} className="min-h-10 border border-ink-900 bg-ink-900 px-4 text-xs font-medium text-white hover:bg-brand-900">{busy ? "Verifying chain…" : "Verify chain"}</button>{state ? <p role={state.error ? "alert" : "status"} className="text-xs text-ink-700">{state.text}</p> : null}</div>;
+  return <div className="flex flex-wrap items-center gap-3"><button type="button" onClick={verify} disabled={busy} className="min-h-10 border border-brand-700 bg-brand-700 px-4 text-xs font-medium text-white hover:bg-brand-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60">{busy ? "Verifying chain…" : "Verify chain"}</button>{state ? <p role={state.error ? "alert" : "status"} className="text-xs text-ink-700">{state.text}</p> : null}</div>;
 }
 
 export function AuditLiveFeed({ initial }: { initial: { sequence: string; action: string; entityType: string; entityId: string; occurredAt: string; hash: string }[] }) {

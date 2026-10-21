@@ -14,14 +14,18 @@ function asPayload(value: unknown): Payload {
   return value as Payload;
 }
 
-export async function dispatchOutboxMessage(topic: string, value: unknown): Promise<void> {
+export async function dispatchOutboxMessage(
+  topic: string,
+  value: unknown,
+  options: { requireEmailDelivery?: boolean } = {},
+): Promise<void> {
   const payload = asPayload(value);
   if (topic === "email.send") {
     await sendEmail({
       to: String(payload.to),
       subject: String(payload.subject),
       text: String(payload.text),
-    });
+    }, { required: options.requireEmailDelivery });
     return;
   }
 

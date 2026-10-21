@@ -135,6 +135,7 @@ model User {
   enquiriesAsBuyer  Enquiry[]
   ownedCards        GoldCard[]
   payments          Payment[]
+  enquiryActivities EnquiryActivity[]
 
   @@index([globalRole])
   @@index([isSuspended])
@@ -292,6 +293,7 @@ model AgentProfile {
   updatedAt             DateTime      @updatedAt
   properties            Property[]
   enquiries             Enquiry[]
+  assignedEnquiries     Enquiry[] @relation("EnquiryAssignee")
   cards                 GoldCard[]
   targetedPayments      Payment[] @relation("PaymentTargetAgent")
 
@@ -378,15 +380,36 @@ model Enquiry {
   buyerPhone     String?
   message        String        @db.Text
   status         LeadStatus    @default(NEW)
+  assignedAgentProfileId String?
+  assignedAgentProfile AgentProfile? @relation("EnquiryAssignee", fields: [assignedAgentProfileId], references: [id], onDelete: SetNull)
+  followUpAt     DateTime?
   source         String        @default("marketplace")
   ipHash         String?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
+  activities     EnquiryActivity[]
 
   @@index([agentProfileId, status, createdAt])
+  @@index([assignedAgentProfileId, status, createdAt])
+  @@index([agencyId, followUpAt])
   @@index([agencyId, status, createdAt])
   @@index([propertyId, createdAt])
   @@index([buyerUserId, createdAt])
+}
+
+model EnquiryActivity {
+  id          String   @id @default(cuid())
+  enquiryId   String
+  enquiry     Enquiry  @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
+  actorUserId String?
+  actorUser   User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  action      String
+  note        String?  @db.Text
+  details     Json?
+  createdAt   DateTime @default(now())
+
+  @@index([enquiryId, createdAt])
+  @@index([actorUserId, createdAt])
 }
 
 model CardPlan {

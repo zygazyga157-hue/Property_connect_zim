@@ -6,6 +6,7 @@ import { SiteFooter } from "@/components/site-footer";
 export const metadata: Metadata = {
   title: { default: "Property Connect Zimbabwe", template: "%s | Property Connect" },
   description: "A professional digital property office for Zimbabwe. Verified agents, documented listings, direct enquiries.",
+  icons: { icon: "/brand/favicon.ico" },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

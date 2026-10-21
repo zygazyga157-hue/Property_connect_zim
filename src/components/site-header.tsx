@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 import { ArrowUpRight, ChevronDown, Compass, Menu, UserRound } from "lucide-react";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
@@ -63,7 +64,7 @@ export async function SiteHeader() {
   return <header className="sticky top-0 z-40 border-b border-graphite-200 bg-paper-50/95 backdrop-blur">
     <div className="relative mx-auto flex min-h-[68px] max-w-7xl items-center justify-between gap-4 px-4 sm:px-8">
       <Link href="/" className="flex min-w-0 shrink-0 items-center gap-3 rounded-[4px]" aria-label="Property Connect home">
-        <span className="grid size-9 shrink-0 place-items-center border border-graphite-300 bg-paper-100 font-mono text-[10px] font-semibold tracking-tight text-ink-900">PCZ</span>
+        <Image src="/brand/property-connect-logo.png" alt="Property Connect Zimbabwe" width={736} height={586} priority className="h-12 w-[60px] shrink-0 object-contain sm:h-[54px] sm:w-[68px]" />
         <span className="hidden whitespace-nowrap text-[13px] font-semibold tracking-[-.02em] text-ink-900 min-[400px]:inline">PROPERTY CONNECT <span className="ml-1 font-mono text-[9px] font-normal tracking-[.12em] text-ink-500">ZIMBABWE</span></span>
       </Link>
 

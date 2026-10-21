@@ -40,11 +40,7 @@ Authentication emails use branded responsive HTML with a plain-text fallback. Ve
 
 ## Payment and card activation
 
-Paynow is the initial checkout provider. Plans are seeded without prices and with `priceApproved = false`, so checkout remains closed. A platform administrator must set a price, approve it, and activate the plan in `/admin/cards` before checkout opens. Verified callbacks are idempotent; payment recovery and side effects are delivered through the transactional outbox.
-
-Agents can buy and renew their own seat from `/agent/card`; verified Paynow callbacks activate or extend the same card. Agency administrators can sponsor a card for an approved agent or purchase unassigned agency inventory from `/agency/cards`. Paid unassigned cards are assigned by an agency administrator, then activated by the named agent at `/activate` with a one-time code. Agency staff can view inventory and payment status but cannot purchase or assign cards. The public header and agent workspace both link to activation, and signed-out visitors are asked to sign in before entering a code.
-
-Platform administrators with MFA can mint and assign cards, replace pre-activation codes, suspend and restore seats, and revoke cards from card forensics. Changes that affect a card state require a reason and are audited. Suspension pauses the paid term; refund callbacks recalculate coverage from remaining non-refunded terms.
+Paynow is the initial checkout provider. Plans are seeded without prices and with `priceApproved = false`, so public checkout remains closed. A platform administrator must set a price, approve it, and activate the plan in `/admin/cards` before checkout opens. In test mode, set `PAYNOW_MERCHANT_EMAIL` to the Paynow merchant account email so the merchant can complete fake test payments. Verified callbacks are idempotent; payment recovery and side effects are delivered through the transactional outbox. Admin-minted cards continue to use `/activate`.
 
 Keep Paynow in test mode until merchant credentials and pricing are approved. Configure its callback URL to `/api/paynow/result` and the return URL to `/payment/return`.
 
@@ -59,3 +55,8 @@ Audit checkpoints are signed through AWS KMS. Create an asymmetric ECC P-256 sig
 The current compatibility spike selects a Node.js web service on Render, Neon PostgreSQL, Resend SMTP, AWS KMS, and Cloudflare R2. See [docs/deployment-spike.md](docs/deployment-spike.md) for setup details, version compatibility, and the pending records-retention decision. Production server startup validates required configuration and refuses to serve without the required auth, database, storage, mail, signing, and cron secrets. Build-time compilation does not need live service credentials.
 
 Build with `npm run build` and start with `npm start`. Configure `npm run db:deploy` as the release migration command. Do not run migrations against a shared or production database until its target has been reviewed.
+
+# Agents debug cli cmd
+$after = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+# Create the invitation, then:
+npm run outbox:drain:agent-invitations -- --after $after

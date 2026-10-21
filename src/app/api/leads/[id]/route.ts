@@ -9,6 +9,6 @@ export async function PATCH(request: Request, context: Context) {
   return withApiErrors(async () => {
     const user = await requireUser(request.headers);
     const body = await parseJson(request, leadUpdateSchema);
-    return jsonOk(await updateLead(user, (await context.params).id, body.status));
+    return jsonOk(await updateLead(user, (await context.params).id, body));
   });
 }
