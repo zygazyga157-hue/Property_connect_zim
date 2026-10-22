@@ -12,7 +12,7 @@ export async function GET(request: Request) {
     const user = await requireUser(request.headers);
     const type = parseInvitationType(new URL(request.url).searchParams.get("type"));
     const scope = await resolveInvitationScope(user, type);
-    return jsonOk(await listAgentInvitations(scope));
+    return jsonOk(await listAgentInvitations(scope, new URL(request.url).searchParams));
   });
 }
 

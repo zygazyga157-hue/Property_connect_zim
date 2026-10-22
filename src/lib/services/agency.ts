@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { ApiError } from "@/lib/errors";
 import { appendAuditEvent } from "@/lib/audit/chain";
 import { enqueueOutbox } from "@/lib/outbox";
+import { PAGE_SIZES, paginationEnvelope, paginationWindow, requestedPage } from "@/lib/pagination";
 import { publicMediaUrl } from "@/lib/r2";
 import { Prisma } from "@/generated/prisma/client";
 import type { z } from "zod";
@@ -155,20 +156,34 @@ async function issueAgentInvitation(
   return { id: created.id, expiresAt };
 }
 
-export async function listAgentInvitations(scope: { agencyId: string; parentAgentId: string | null }) {
+export async function listAgentInvitations(scope: { agencyId: string; parentAgentId: string | null }, params = new URLSearchParams()) {
   const now = new Date();
+  const q = params.get("q")?.trim();
+  const status = params.get("status");
+  const where = {
+    agencyId: scope.agencyId,
+    parentAgentId: scope.parentAgentId,
+    ...(q ? { email: { contains: q, mode: "insensitive" as const } } : {}),
+    ...(status === "REVOKED" ? { revokedAt: { not: null } }
+      : status === "ACCEPTED" ? { acceptedAt: { not: null }, revokedAt: null }
+        : status === "EXPIRED" ? { acceptedAt: null, revokedAt: null, expiresAt: { lte: now } }
+          : status === "PENDING" ? { acceptedAt: null, revokedAt: null, expiresAt: { gt: now } } : {}),
+  };
+  const totalItems = await prisma.agentInvitation.count({ where });
+  const window = paginationWindow(totalItems, PAGE_SIZES.workspace, requestedPage(params));
   const invitations = await prisma.agentInvitation.findMany({
-    where: { agencyId: scope.agencyId, parentAgentId: scope.parentAgentId },
-    orderBy: { createdAt: "desc" },
-    take: 100,
+    where,
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    skip: window.skip, take: window.pageSize,
     select: { id: true, email: true, createdAt: true, expiresAt: true, acceptedAt: true, revokedAt: true },
   });
-  return invitations.map((invitation) => ({
+  const items = invitations.map((invitation) => ({
     ...invitation,
     status: invitation.revokedAt ? "REVOKED" as const
       : invitation.acceptedAt ? "ACCEPTED" as const
         : invitation.expiresAt <= now ? "EXPIRED" as const : "PENDING" as const,
   }));
+  return paginationEnvelope(items, window);
 }
 
 export async function revokeAgentInvitation(input: {

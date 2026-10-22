@@ -6,6 +6,7 @@ import { prisma } from "@/lib/db";
 import { ApiError } from "@/lib/errors";
 import { appendAuditEvent } from "@/lib/audit/chain";
 import { enqueueOutbox } from "@/lib/outbox";
+import { PAGE_SIZES, paginationEnvelope, paginationWindow, requestedPage } from "@/lib/pagination";
 import { activationCodeMatches, hashActivationCode } from "@/lib/card-codes";
 import type { CurrentUser } from "@/lib/authz";
 import type { z } from "zod";
@@ -375,15 +376,24 @@ export async function adminCardAction(actorUserId: string, serial: string, actio
   return result;
 }
 
-export async function listAgencyCards(user: CurrentUser) {
+export async function listAgencyCards(user: CurrentUser, params = new URLSearchParams()) {
   const memberships = await prisma.agencyMembership.findMany({
     where: { userId: user.id, status: "ACTIVE" },
     select: { agencyId: true, role: true, agency: { select: { name: true, status: true } } },
   });
   const ids = memberships.map((membership) => membership.agencyId);
   if (!ids.length) throw new ApiError(403, "AGENCY_ACCESS_REQUIRED", "An active agency membership is required.");
+  const status = params.get("status");
+  const q = params.get("q")?.trim();
+  const now = new Date();
+  const statusWhere: Prisma.GoldCardWhereInput = status === "EXPIRED" ? { OR: [{ status: "EXPIRED" }, { status: "ACTIVE", expiresAt: { lte: now } }] }
+    : status === "ACTIVE" ? { status: "ACTIVE", expiresAt: { gt: now } }
+      : status && ["MINTED", "ASSIGNED", "SUSPENDED", "REVOKED"].includes(status) ? { status: status as "MINTED" | "ASSIGNED" | "SUSPENDED" | "REVOKED" } : {};
+  const where: Prisma.GoldCardWhereInput = { AND: [{ agencyId: { in: ids } }, statusWhere, ...(q ? [{ OR: [{ serial: { contains: q, mode: "insensitive" as const } }, { agentProfile: { fullName: { contains: q, mode: "insensitive" as const } } }] }] : [])] };
+  const totalItems = await prisma.goldCard.count({ where });
+  const window = paginationWindow(totalItems, PAGE_SIZES.workspace, requestedPage(params));
   const cards = await prisma.goldCard.findMany({
-    where: { agencyId: { in: ids } }, orderBy: { createdAt: "desc" }, take: 200,
+    where, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip: window.skip, take: window.pageSize,
     include: {
       plan: { select: { name: true, durationDays: true } },
       agentProfile: { select: { id: true, fullName: true, eacRegistrationNumber: true } },
@@ -391,7 +401,7 @@ export async function listAgencyCards(user: CurrentUser) {
     },
   });
   const safeCards = cards.map((card) => Object.fromEntries(Object.entries(card).filter(([key]) => key !== "activationCodeHash")));
-  return { cards: safeCards, agencies: memberships.map((membership) => ({ id: membership.agencyId, ...membership.agency })), canManage: memberships.some((membership) => membership.role === "AGENCY_ADMIN") };
+  return { ...paginationEnvelope(safeCards, window), agencies: memberships.map((membership) => ({ id: membership.agencyId, ...membership.agency })), canManage: memberships.some((membership) => membership.role === "AGENCY_ADMIN") };
 }
 
 export async function revokeRefundedPaymentTerm(tx: Tx, input: { paymentId: string; cardId: string; actorUserId?: string | null }) {

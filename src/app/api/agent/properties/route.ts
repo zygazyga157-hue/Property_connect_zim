@@ -4,7 +4,7 @@ import { propertySchema } from "@/lib/schemas";
 import { createProperty, listManagedProperties } from "@/lib/services/properties";
 
 export async function GET(request: Request) {
-  return withApiErrors(async () => jsonOk(await listManagedProperties(await requireUser(request.headers))));
+  return withApiErrors(async () => jsonOk(await listManagedProperties(await requireUser(request.headers), new URL(request.url).searchParams)));
 }
 
 export async function POST(request: Request) {

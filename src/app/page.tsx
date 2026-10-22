@@ -4,9 +4,10 @@ import { PropertyCard } from "@/components/property-card";
 import { RuleLine, Seal } from "@/components/identity";
 import { RegistrySelect } from "@/components/form-controls";
 import { listPublicProperties } from "@/lib/services/properties";
+import { PaginationControls } from "@/components/pagination-controls";
 
 export const dynamic = "force-dynamic";
-type Props = { searchParams: Promise<{ q?: string; city?: string; purpose?: string; type?: string }> };
+type Props = { searchParams: Promise<{ q?: string; city?: string; purpose?: string; type?: string; page?: string }> };
 
 export default async function HomePage({ searchParams }: Props) {
   const filters = await searchParams;
@@ -34,7 +35,8 @@ export default async function HomePage({ searchParams }: Props) {
       </div>
       <RuleLine label="CURRENT REGISTER" />
       {listingResult?.items.length ? <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">{listingResult.items.map((property) => <PropertyCard key={property.id} property={property} />)}</div> : <div className="border border-graphite-200 bg-paper-100 px-6 py-12 text-center"><BookOpenCheck className="mx-auto text-ink-500" size={23} strokeWidth={1.5} /><h3 className="mt-4 font-deed text-xl text-ink-900">{listingResult ? "No properties match this search." : "The property registry is being prepared."}</h3><p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-ink-500">{listingResult ? "Adjust the area or search terms to view other listings." : "Approved listings will appear here once agencies and agents complete review."}</p></div>}
-      <p className="mt-5 text-xs text-ink-500">{listingResult ? listingResult.total + " active records" : "PROPERTY CONNECT · REGISTRY"}</p>
+      <p className="mt-5 text-xs text-ink-500">{listingResult ? listingResult.totalItems + " active records" : "PROPERTY CONNECT · REGISTRY"}</p>
+      {listingResult ? <PaginationControls pathname="/" searchParams={params} page={listingResult.page} pageSize={listingResult.pageSize} totalItems={listingResult.totalItems} /> : null}
     </section>
     <section className="border-y border-graphite-200 bg-paper-100"><div className="mx-auto grid max-w-7xl gap-6 px-5 py-12 sm:px-8 md:grid-cols-3">{[["01", "Named access", "Every agent signs in with their own verified account."], ["02", "Reviewed identity", "Agency and EAC information is reviewed before publishing."], ["03", "Direct enquiries", "Buyers contact the professional responsible for each record."]].map(([number, title, copy]) => <article key={number} className="border-l border-graphite-300 pl-4"><span className="font-mono text-[10px] tracking-[.14em] text-ink-500">{number}</span><h3 className="mt-3 font-deed text-xl text-ink-900">{title}</h3><p className="mt-2 text-sm leading-6 text-ink-500">{copy}</p></article>)}</div></section>
     <section className="mx-auto max-w-7xl px-5 py-14 sm:px-8"><div className="flex flex-col justify-between gap-5 border border-graphite-200 bg-paper-50 p-6 sm:flex-row sm:items-center sm:p-8"><div><p className="flex items-center gap-2 text-xs text-ink-500"><ShieldCheck size={15} /> EAC review · named agent accounts</p><h2 className="mt-3 font-deed text-2xl text-ink-900">Build your professional record.</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-ink-500">Agencies can apply for review. Agents join through a named invitation and manage their own listings and enquiries.</p></div><Link href="/register/agency" className="inline-flex min-h-11 shrink-0 items-center gap-2 border border-graphite-300 px-4 text-sm font-medium hover:bg-paper-100">Start agency application <ArrowRight size={15} /></Link></div></section>

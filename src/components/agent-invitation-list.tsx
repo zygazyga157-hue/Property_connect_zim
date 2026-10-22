@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
 import { DialogInput } from "@/components/form-controls";
 
 type InvitationType = "agency" | "subagent";
@@ -14,6 +15,7 @@ type Invitation = {
   status: "PENDING" | "ACCEPTED" | "EXPIRED" | "REVOKED";
 };
 type ResultState = { message: string; error?: boolean } | null;
+type InvitationPage = { page: number; pageSize: number; totalItems: number; totalPages: number };
 
 async function readError(response: Response, fallback: string) {
   const result = await response.json().catch(() => ({}));
@@ -23,20 +25,29 @@ async function readError(response: Response, fallback: string) {
 
 export function AgentInvitationList({ invitationType, refreshKey, canManage = true, canResend = true, manageMessage }: { invitationType: InvitationType; refreshKey: number; canManage?: boolean; canResend?: boolean; manageMessage?: string }) {
   const [invitations, setInvitations] = useState<Invitation[]>([]);
+  const [pagination, setPagination] = useState<InvitationPage>({ page: 1, pageSize: 25, totalItems: 0, totalPages: 0 });
   const [loading, setLoading] = useState(true);
   const [localRefresh, setLocalRefresh] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [revokeId, setRevokeId] = useState<string | null>(null);
   const [state, setState] = useState<ResultState>(null);
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const page = Math.max(1, Number(searchParams.get("invitePage")) || 1);
+  const q = searchParams.get("inviteQ") ?? "";
+  const status = searchParams.get("inviteStatus") ?? "";
 
   useEffect(() => {
     let current = true;
     async function load() {
       setLoading(true);
       try {
-        const response = await fetch("/api/agency/invitations?type=" + invitationType, { cache: "no-store" });
+        const query = new URLSearchParams({ type: invitationType, page: String(page) });
+        if (q) query.set("q", q);
+        if (status) query.set("status", status);
+        const response = await fetch("/api/agency/invitations?" + query.toString(), { cache: "no-store" });
         const data = await readError(response, "Invitations could not be loaded.");
-        if (current) setInvitations(data as Invitation[]);
+        if (current) { setInvitations(data.items as Invitation[]); setPagination(data as InvitationPage); }
       } catch (error) {
         if (current) setState({ message: error instanceof Error ? error.message : "Invitations could not be loaded.", error: true });
       } finally {
@@ -45,7 +56,17 @@ export function AgentInvitationList({ invitationType, refreshKey, canManage = tr
     }
     void load();
     return () => { current = false; };
-  }, [invitationType, refreshKey, localRefresh]);
+  }, [invitationType, refreshKey, localRefresh, page, q, status]);
+
+  function pageHref(target: number) {
+    const next = new URLSearchParams(searchParams.toString());
+    if (target <= 1) next.delete("invitePage"); else next.set("invitePage", String(target));
+    const query = next.toString();
+    return query ? pathname + "?" + query : pathname;
+  }
+  const pageStart = Math.max(1, pagination.page - 2);
+  const pageEnd = Math.min(pagination.totalPages, pagination.page + 2);
+  const invitationPages = Array.from({ length: pageEnd - pageStart + 1 }, (_, index) => pageStart + index);
 
   async function resend(invitation: Invitation) {
     setBusyId(invitation.id);
@@ -79,6 +100,13 @@ export function AgentInvitationList({ invitationType, refreshKey, canManage = tr
   return <section className="mt-5 border-t border-graphite-200 pt-4" aria-labelledby="agent-invitations-heading">
     <h3 id="agent-invitations-heading" className="font-deed text-lg text-ink-900">Invitation register</h3>
     <p className="mt-1 text-xs leading-5 text-ink-500">Resending replaces the previous link. Revoked and expired invitations cannot be used.</p>
+    <form action={pathname} method="get" className="mt-3 grid gap-2 sm:grid-cols-[1fr_150px_auto]">
+      <input type="hidden" name="type" value={invitationType} />
+      {["q", "status", "page"].map((key) => searchParams.get(key) ? <input key={key} type="hidden" name={key} value={searchParams.get(key) ?? ""} /> : null)}
+      <label className="sr-only" htmlFor="invitation-search">Search invitation email</label><input id="invitation-search" name="inviteQ" defaultValue={q} placeholder="Search email" className="min-h-9 border border-graphite-300 bg-paper-50 px-3 text-xs" />
+      <label className="sr-only" htmlFor="invitation-status">Invitation status</label><select id="invitation-status" name="inviteStatus" defaultValue={status} className="min-h-9 border border-graphite-300 bg-paper-50 px-3 text-xs"><option value="">All statuses</option><option value="PENDING">Pending</option><option value="ACCEPTED">Accepted</option><option value="EXPIRED">Expired</option><option value="REVOKED">Revoked</option></select>
+      <button className="min-h-9 border border-brand-700 bg-brand-700 px-3 text-xs font-medium text-white hover:bg-brand-900" type="submit">Filter</button>
+    </form>
     {!canManage ? <p className="mt-2 text-xs text-ink-600">{manageMessage ?? "Invitation changes require an active professional card."}</p> : null}
     {canManage && !canResend ? <p className="mt-2 text-xs text-ink-600">This agency is not accepting new agent registrations. Pending invitations can still be revoked.</p> : null}
     {state ? <p role={state.error ? "alert" : "status"} className="mt-3 text-xs text-ink-700">{state.message}</p> : null}
@@ -94,6 +122,7 @@ export function AgentInvitationList({ invitationType, refreshKey, canManage = tr
         </div>
       </li>)}
     </ul> : !state?.error ? <p className="mt-3 text-xs text-ink-500">No invitations have been sent yet.</p> : null}
+    {pagination.totalPages > 1 ? <nav className="mt-4 flex flex-wrap items-center justify-between gap-3" aria-label="Invitation pagination"><p className="text-xs text-ink-500">Page {pagination.page} of {pagination.totalPages} · {pagination.totalItems} invitations</p><div className="flex flex-wrap items-center gap-1">{pagination.page > 1 ? <a className="border border-graphite-300 px-3 py-2 text-xs" href={pageHref(pagination.page - 1)} rel="prev">Previous</a> : null}{invitationPages.map((number) => number === pagination.page ? <span key={number} aria-current="page" className="border border-brand-700 bg-brand-700 px-3 py-2 text-xs font-medium text-white">{number}</span> : <a key={number} aria-label={"Go to invitation page " + number} className="border border-graphite-300 px-3 py-2 text-xs" href={pageHref(number)}>{number}</a>)}{pagination.page < pagination.totalPages ? <a className="border border-graphite-300 px-3 py-2 text-xs" href={pageHref(pagination.page + 1)} rel="next">Next</a> : null}</div></nav> : null}
     <DialogInput open={Boolean(revokeId)} title="Revoke this invitation" description="The recipient will no longer be able to use this registration link. Record a reason for the audit history." label="Revocation reason" submitLabel="Revoke invitation" busy={Boolean(revokeId && busyId === revokeId)} onCancel={() => setRevokeId(null)} onSubmit={revoke} />
   </section>;
 }

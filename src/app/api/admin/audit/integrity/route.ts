@@ -5,6 +5,7 @@ import { verifyAuditChain } from "@/lib/audit/chain";
 import { verifyStoredCheckpoints } from "@/lib/audit/checkpoint";
 import { merkleRoot } from "@/lib/audit/merkle";
 import { z } from "zod";
+import { PAGE_SIZES, paginationEnvelope, paginationWindow, requestedPage } from "@/lib/pagination";
 
 const verifySchema = z.object({
   fromSequence: z.string().regex(/^\d+$/).optional(),
@@ -14,15 +15,18 @@ const verifySchema = z.object({
 export async function GET(request: Request) {
   return withApiErrors(async () => {
     await requirePlatformAdmin(request.headers);
+    const params = new URL(request.url).searchParams;
+    const totalItems = await prisma.auditCheckpoint.count();
+    const window = paginationWindow(totalItems, PAGE_SIZES.dense, requestedPage(params));
     const [head, checkpoints, checkpointVerification] = await Promise.all([
       prisma.auditChainHead.findUnique({ where: { id: "global" } }),
-      prisma.auditCheckpoint.findMany({ orderBy: { toSequence: "desc" }, take: 90 }),
+      prisma.auditCheckpoint.findMany({ orderBy: [{ toSequence: "desc" }, { id: "desc" }], skip: window.skip, take: window.pageSize }),
       verifyStoredCheckpoints(),
     ]);
     const verification = await verifyAuditChain();
     return jsonOk({
       chain: { sequence: (head?.sequence ?? 0n).toString(), lastHash: head?.lastHash ?? "", verification: { ...verification, checked: verification.checked.toString(), failedAt: verification.failedAt?.toString() } },
-      checkpoints: checkpoints.map((item) => {
+      checkpoints: paginationEnvelope(checkpoints.map((item) => {
         const verification = checkpointVerification.find((result) => result.id === item.id);
         return {
           ...item,
@@ -34,7 +38,7 @@ export async function GET(request: Request) {
             toSequence: verification.toSequence.toString(),
           } : null,
         };
-      }),
+      }), window),
     });
   });
 }

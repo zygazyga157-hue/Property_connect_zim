@@ -5,6 +5,6 @@ import { listBuyerEnquiries } from "@/lib/services/buyer";
 export async function GET(request: Request) {
   return withApiErrors(async () => {
     const user = await requireBuyer(request.headers);
-    return jsonOk(await listBuyerEnquiries(user.id));
+    return jsonOk(await listBuyerEnquiries(user.id, new URL(request.url).searchParams));
   });
 }

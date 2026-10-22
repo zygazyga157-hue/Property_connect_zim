@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { ApiError } from "@/lib/errors";
 import type { buyerProfileSchema } from "@/lib/schemas";
 import type { z } from "zod";
+import { PAGE_SIZES, paginationEnvelope, paginationWindow, requestedPage } from "@/lib/pagination";
 
 type BuyerProfileInput = z.infer<typeof buyerProfileSchema>;
 
@@ -20,10 +21,23 @@ export async function updateBuyerProfile(userId: string, input: BuyerProfileInpu
   });
 }
 
-export async function listSavedProperties(userId: string) {
-  return prisma.savedProperty.findMany({
-    where: { buyerUserId: userId },
-    orderBy: { createdAt: "desc" },
+export async function listSavedProperties(userId: string, params = new URLSearchParams()) {
+  const q = params.get("savedQ")?.trim();
+  const where = {
+    buyerUserId: userId,
+    ...(q ? { property: { OR: [
+      { title: { contains: q, mode: "insensitive" as const } },
+      { city: { contains: q, mode: "insensitive" as const } },
+      { suburb: { contains: q, mode: "insensitive" as const } },
+    ] } } : {}),
+  };
+  const totalItems = await prisma.savedProperty.count({ where });
+  const window = paginationWindow(totalItems, PAGE_SIZES.properties, requestedPage(params, "savedPage"));
+  const items = await prisma.savedProperty.findMany({
+    where,
+    orderBy: [{ createdAt: "desc" }, { propertyId: "desc" }],
+    skip: window.skip,
+    take: window.pageSize,
     include: {
       property: {
         select: {
@@ -34,6 +48,7 @@ export async function listSavedProperties(userId: string) {
       },
     },
   });
+  return paginationEnvelope(items, window);
 }
 
 export async function saveProperty(userId: string, propertyId: string) {
@@ -63,15 +78,29 @@ export async function removeSavedProperty(userId: string, propertyId: string) {
   return { removed: true };
 }
 
-export async function listBuyerEnquiries(userId: string) {
-  return prisma.enquiry.findMany({
-    where: { buyerUserId: userId },
-    orderBy: { createdAt: "desc" },
-    take: 100,
+export async function listBuyerEnquiries(userId: string, params = new URLSearchParams()) {
+  const q = params.get("enquiryQ")?.trim();
+  const where = {
+    buyerUserId: userId,
+    ...(q ? { OR: [
+      { message: { contains: q, mode: "insensitive" as const } },
+      { buyerName: { contains: q, mode: "insensitive" as const } },
+      { property: { title: { contains: q, mode: "insensitive" as const } } },
+      { agentProfile: { fullName: { contains: q, mode: "insensitive" as const } } },
+    ] } : {}),
+  };
+  const totalItems = await prisma.enquiry.count({ where });
+  const window = paginationWindow(totalItems, PAGE_SIZES.enquiries, requestedPage(params, "enquiryPage"));
+  const items = await prisma.enquiry.findMany({
+    where,
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    skip: window.skip,
+    take: window.pageSize,
     select: {
       id: true, buyerName: true, buyerEmail: true, buyerPhone: true, message: true, status: true, createdAt: true,
       property: { select: { id: true, slug: true, title: true, city: true, suburb: true } },
       agentProfile: { select: { fullName: true, agency: { select: { name: true } } } },
     },
   });
+  return paginationEnvelope(items, window);
 }

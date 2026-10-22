@@ -42,7 +42,7 @@ Authentication emails use branded responsive HTML with a plain-text fallback. Ve
 
 Paynow is the initial checkout provider. Plans are seeded without prices and with `priceApproved = false`, so public checkout remains closed. A platform administrator must set a price, approve it, and activate the plan in `/admin/cards` before checkout opens. In test mode, set `PAYNOW_MERCHANT_EMAIL` to the Paynow merchant account email so the merchant can complete fake test payments. Verified callbacks are idempotent; payment recovery and side effects are delivered through the transactional outbox. Admin-minted cards continue to use `/activate`.
 
-Keep Paynow in test mode until merchant credentials and pricing are approved. Configure its callback URL to `/api/paynow/result` and the return URL to `/payment/return`.
+Keep Paynow in test mode until merchant credentials and pricing are approved. Configure its callback URL to `/api/paynow/result` and the return URL to `/payment/return`. For existing environment settings, `/api/payments/webhook` and `/payment/success` are supported aliases.
 
 ## Storage, audit, and background work
 

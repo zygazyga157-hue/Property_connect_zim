@@ -10,6 +10,7 @@ import { requireActiveAgent, type CurrentUser } from "@/lib/authz";
 import type { PropertyInput } from "@/lib/schemas";
 import { hashClientIp } from "@/lib/rate-limit";
 import { publicMediaUrl } from "@/lib/r2";
+import { PAGE_SIZES, paginationEnvelope, paginationWindow, requestedPage } from "@/lib/pagination";
 
 const publicPropertySelect = {
   id: true, slug: true, title: true, description: true, propertyType: true, purpose: true,
@@ -49,8 +50,7 @@ export async function listPublicProperties(search: URLSearchParams) {
   const city = search.get("city")?.trim();
   const purpose = search.get("purpose");
   const propertyType = search.get("type");
-  const page = Math.max(1, Number(search.get("page") ?? 1) || 1);
-  const take = Math.min(40, Math.max(1, Number(search.get("limit") ?? 20) || 20));
+  const requested = requestedPage(search);
   const where: Prisma.PropertyWhereInput = {
     status: "PUBLISHED",
     agentProfile: { status: "ACTIVE", agency: { status: "ACTIVE" } },
@@ -60,11 +60,10 @@ export async function listPublicProperties(search: URLSearchParams) {
       ? { propertyType: propertyType as "HOUSE" | "APARTMENT" | "TOWNHOUSE" | "LAND" | "COMMERCIAL" | "FARM" | "OTHER" } : {}),
     ...(q ? { OR: [{ title: { contains: q, mode: "insensitive" } }, { description: { contains: q, mode: "insensitive" } }, { suburb: { contains: q, mode: "insensitive" } }] } : {}),
   };
-  const [items, total] = await Promise.all([
-    prisma.property.findMany({ where, select: publicPropertySelect, orderBy: [{ publishedAt: "desc" }, { id: "desc" }], skip: (page - 1) * take, take }),
-    prisma.property.count({ where }),
-  ]);
-  return { items, page, limit: take, total, pages: Math.ceil(total / take) };
+  const totalItems = await prisma.property.count({ where });
+  const window = paginationWindow(totalItems, PAGE_SIZES.properties, requested);
+  const items = await prisma.property.findMany({ where, select: publicPropertySelect, orderBy: [{ publishedAt: "desc" }, { id: "desc" }], skip: window.skip, take: window.pageSize });
+  return paginationEnvelope(items, window);
 }
 
 export async function getPublicProperty(idOrSlug: string) {
@@ -112,17 +111,28 @@ export async function createProperty(user: CurrentUser, input: PropertyInput) {
   }, { isolationLevel: "Serializable" });
 }
 
-export async function listManagedProperties(user: CurrentUser) {
+export async function listManagedProperties(user: CurrentUser, params = new URLSearchParams()) {
   const profile = await prisma.agentProfile.findUnique({ where: { userId: user.id }, select: { id: true } });
   const memberships = await prisma.agencyMembership.findMany({ where: { userId: user.id, status: "ACTIVE" }, select: { agencyId: true, role: true } });
   const agencyAdminIds = memberships.map((item) => item.agencyId);
   const where: Prisma.PropertyWhereInput = profile
     ? { agentProfileId: profile.id }
     : agencyAdminIds.length ? { agencyId: { in: agencyAdminIds } } : { id: "__no_access__" };
-  return prisma.property.findMany({
-    where, orderBy: { updatedAt: "desc" }, take: 100,
+  const q = params.get("q")?.trim();
+  const status = params.get("status");
+  const filteredWhere: Prisma.PropertyWhereInput = {
+    AND: [where,
+      ...(q ? [{ OR: [{ title: { contains: q, mode: "insensitive" as const } }, { city: { contains: q, mode: "insensitive" as const } }, { suburb: { contains: q, mode: "insensitive" as const } }] }] : []),
+      ...(status && ["DRAFT", "PUBLISHED", "PAUSED", "ARCHIVED", "PENDING_REVIEW", "REJECTED"].includes(status) ? [{ status: status as Prisma.EnumPropertyStatusFilter["equals"] }] : []),
+    ],
+  };
+  const totalItems = await prisma.property.count({ where: filteredWhere });
+  const window = paginationWindow(totalItems, PAGE_SIZES.workspace, requestedPage(params));
+  const items = await prisma.property.findMany({
+    where: filteredWhere, orderBy: [{ updatedAt: "desc" }, { id: "desc" }], skip: window.skip, take: window.pageSize,
     include: { images: { orderBy: { sortOrder: "asc" } }, agentProfile: { select: { id: true, fullName: true } } },
   });
+  return paginationEnvelope(items, window);
 }
 
 export async function updateProperty(user: CurrentUser, propertyId: string, input: PropertyInput) {
@@ -277,40 +287,89 @@ export async function createPublicEnquiry(input: {
   });
 }
 
-export async function listLeads(user: CurrentUser) {
+async function leadListWhere(user: CurrentUser, params: URLSearchParams): Promise<Prisma.EnquiryWhereInput> {
   const profile = await prisma.agentProfile.findUnique({
     where: { userId: user.id }, include: { subagents: { select: { id: true } }, agency: { select: { status: true } } },
   });
+  let scopeWhere: Prisma.EnquiryWhereInput;
   if (profile) {
     if (profile.status !== "ACTIVE" || profile.agency.status !== "ACTIVE") {
       throw new ApiError(403, "AGENT_NOT_ACTIVE", "An active agent profile in an active agency is required to view agent enquiries.");
     }
     const visibleAgentIds = [profile.id, ...profile.subagents.map((agent) => agent.id)];
-    return prisma.enquiry.findMany({
-      where: { assignedAgentProfileId: { in: visibleAgentIds } }, orderBy: { createdAt: "desc" }, take: 100,
-      include: {
-        property: { select: { id: true, title: true, slug: true } },
-        agentProfile: { select: { id: true, fullName: true } },
-        assignedAgentProfile: { select: { id: true, fullName: true } },
-        activities: { orderBy: { createdAt: "desc" }, take: 30, include: { actorUser: { select: { name: true } } } },
-      },
+    scopeWhere = { assignedAgentProfileId: { in: visibleAgentIds } };
+  } else {
+    const agencyMemberships = await prisma.agencyMembership.findMany({
+      where: { userId: user.id, status: "ACTIVE" },
+      select: { agencyId: true, role: true, agency: { select: { status: true } } },
     });
+    const agencyIds = agencyMemberships.filter((membership) => membership.agency.status === "ACTIVE").map((membership) => membership.agencyId);
+    if (!agencyIds.length) throw new ApiError(403, "LEAD_ACCESS_DENIED", "You do not have access to these enquiries.");
+    scopeWhere = { agencyId: { in: agencyIds } };
   }
-  const agencyMemberships = await prisma.agencyMembership.findMany({
-    where: { userId: user.id, status: "ACTIVE" },
-    select: { agencyId: true, role: true, agency: { select: { status: true } } },
+  const q = params.get("q")?.trim();
+  const status = params.get("status");
+  const assignee = params.get("assignee");
+  const followUp = params.get("followUp");
+  const now = new Date();
+  const where: Prisma.EnquiryWhereInput = {
+    AND: [scopeWhere,
+      ...(q ? [{ OR: [
+        { buyerName: { contains: q, mode: "insensitive" as const } },
+        { buyerEmail: { contains: q, mode: "insensitive" as const } },
+        { buyerPhone: { contains: q, mode: "insensitive" as const } },
+        { message: { contains: q, mode: "insensitive" as const } },
+        { property: { title: { contains: q, mode: "insensitive" as const } } },
+        { agentProfile: { fullName: { contains: q, mode: "insensitive" as const } } },
+        { assignedAgentProfile: { fullName: { contains: q, mode: "insensitive" as const } } },
+      ] }] : []),
+      ...(status && ["NEW", "CONTACTED", "QUALIFIED", "CLOSED_WON", "CLOSED_LOST", "SPAM"].includes(status) ? [{ status: status as "NEW" | "CONTACTED" | "QUALIFIED" | "CLOSED_WON" | "CLOSED_LOST" | "SPAM" }] : []),
+      ...(assignee === "unassigned" ? [{ assignedAgentProfileId: null }] : assignee ? [{ assignedAgentProfileId: assignee }] : []),
+      ...(followUp === "none" ? [{ followUpAt: null }] : followUp === "overdue" ? [{ followUpAt: { lt: now } }] : followUp === "due" ? [{ followUpAt: { gte: now, lte: new Date(now.getTime() + 24 * 60 * 60 * 1000) } }] : []),
+    ],
+  };
+  return where;
+}
+
+const leadListInclude = {
+  property: { select: { id: true, title: true, slug: true } },
+  agentProfile: { select: { id: true, fullName: true } },
+  assignedAgentProfile: { select: { id: true, fullName: true } },
+  activities: { orderBy: { createdAt: "desc" as const }, take: 30, include: { actorUser: { select: { name: true } } } },
+};
+
+export async function listLeads(user: CurrentUser, params = new URLSearchParams()) {
+  const where = await leadListWhere(user, params);
+  const totalItems = await prisma.enquiry.count({ where });
+  const window = paginationWindow(totalItems, PAGE_SIZES.enquiries, requestedPage(params));
+  const items = await prisma.enquiry.findMany({
+    where, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip: window.skip, take: window.pageSize,
+    include: leadListInclude,
   });
-  const agencyIds = agencyMemberships.filter((membership) => membership.agency.status === "ACTIVE").map((membership) => membership.agencyId);
-  if (!agencyIds.length) throw new ApiError(403, "LEAD_ACCESS_DENIED", "You do not have access to these enquiries.");
-  return prisma.enquiry.findMany({
-    where: { agencyId: { in: agencyIds } }, orderBy: { createdAt: "desc" }, take: 100,
-    include: {
-      property: { select: { id: true, title: true, slug: true } },
-      agentProfile: { select: { id: true, fullName: true } },
-      assignedAgentProfile: { select: { id: true, fullName: true } },
-      activities: { orderBy: { createdAt: "desc" }, take: 30, include: { actorUser: { select: { name: true } } } },
-    },
-  });
+  return paginationEnvelope(items, window);
+}
+
+export async function getLeadDetailWithNavigation(user: CurrentUser, leadId: string, params = new URLSearchParams()) {
+  const where = await leadListWhere(user, params);
+  const scopeWhere = await leadListWhere(user, new URLSearchParams());
+  const item = await prisma.enquiry.findFirst({ where: { AND: [scopeWhere, { id: leadId }] }, include: leadListInclude });
+  if (!item) throw new ApiError(404, "NOT_FOUND", "The requested record was not found.");
+  const filteredWhere = { AND: [where] } satisfies Prisma.EnquiryWhereInput;
+  const newerWhere = { AND: [filteredWhere, { OR: [{ createdAt: { gt: item.createdAt } }, { createdAt: item.createdAt, id: { gt: item.id } }] }] } satisfies Prisma.EnquiryWhereInput;
+  const totalItems = await prisma.enquiry.count({ where: filteredWhere });
+  const newerItems = await prisma.enquiry.count({ where: newerWhere });
+  const currentIndex = newerItems;
+  const [previous, next] = await Promise.all([
+    currentIndex > 0 ? prisma.enquiry.findMany({ where: filteredWhere, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip: currentIndex - 1, take: 1, select: { id: true } }).then((items) => items[0] ?? null) : null,
+    currentIndex + 1 < totalItems ? prisma.enquiry.findMany({ where: filteredWhere, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip: currentIndex + 1, take: 1, select: { id: true } }).then((items) => items[0] ?? null) : null,
+  ]);
+  return {
+    item,
+    totalItems,
+    position: currentIndex + 1,
+    previous: previous ? { id: previous.id, page: Math.floor((currentIndex - 1) / PAGE_SIZES.enquiries) + 1 } : null,
+    next: next ? { id: next.id, page: Math.floor((currentIndex + 1) / PAGE_SIZES.enquiries) + 1 } : null,
+  };
 }
 
 export async function updateLead(user: CurrentUser, leadId: string, input: {
