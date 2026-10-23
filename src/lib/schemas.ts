@@ -107,7 +107,7 @@ export const buyerProfileSchema = z.object({
   purpose: z.enum(["SALE", "RENT", "SHORT_STAY"]).nullable().optional(),
 });
 
-export const savedPropertySchema = z.object({ propertyId: z.string().cuid() });
+export const savedPropertySchema = z.object({ propertyId: z.string().uuid() });
 
 export const leadUpdateSchema = z.object({
   status: z.enum(["NEW", "CONTACTED", "QUALIFIED", "CLOSED_WON", "CLOSED_LOST", "SPAM"]).optional(),
