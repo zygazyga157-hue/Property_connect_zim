@@ -1,13 +1,59 @@
-# .github/workflows/drain-agent-invitations.yml
 name: drain-agent-invitations
+
 on:
   schedule:
+    # Every 15 minutes. GitHub's cron is UTC and can be delayed a few minutes
+    # under load — that's fine for email delivery.
     - cron: "*/15 * * * *"
   workflow_dispatch:
+    inputs:
+      after:
+        description: "Optional ISO-8601 lower bound (backfill). Leave blank for scheduled runs."
+        required: false
+        type: string
+
+# Prevent overlapping runs (slow runners can otherwise stack up).
+concurrency:
+  group: drain-agent-invitations
+  cancel-in-progress: false
+
 jobs:
   drain:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - run: |
-          curl -fsS "https://propertyconnectzim.vercel.app/api/cron/drain-invitations" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
+      - name: Call drain endpoint
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          APP_URL: ${{ vars.APP_URL }}
+          AFTER: ${{ inputs.after }}
+        run: |
+          set -euo pipefail
+          : "${CRON_SECRET:?CRON_SECRET secret is not configured}"
+          : "${APP_URL:?APP_URL variable is not configured}"
+
+          URL="${APP_URL%/}/api/cron/drain-invitations"
+          if [ -n "${AFTER:-}" ]; then
+            URL="${URL}?after=${AFTER}"
+          fi
+
+          # Capture body and status separately so we can log both.
+          RESPONSE=$(curl -sS -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${URL}")
+          BODY=$(printf '%s' "$RESPONSE" | sed '$d')
+          CODE=$(printf '%s' "$RESPONSE" | tail -n1)
+
+          echo "HTTP ${CODE}"
+          echo "${BODY}"
+
+          if [ "${CODE}" -lt 200 ] || [ "${CODE}" -ge 300 ]; then
+            echo "::error::Drain endpoint returned HTTP ${CODE}"
+            exit 1
+          fi
+
+          # Optional: fail the workflow if the API reported a truncated run,
+          # so you notice a large backlog. Remove if you'd rather it be silent.
+          if printf '%s' "${BODY}" | grep -q '"truncated":true'; then
+            echo "::warning::Drain was truncated by the time budget; next run will continue."
+          fi
