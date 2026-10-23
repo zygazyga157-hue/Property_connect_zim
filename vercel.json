@@ -1,9 +1,0 @@
-{
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "crons": [
-    {
-      "path": "/api/cron/drain-invitations",
-      "schedule": "*/1440 * * * *"
-    }
-  ]
-}
