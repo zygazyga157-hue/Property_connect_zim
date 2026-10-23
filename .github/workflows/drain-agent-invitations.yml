@@ -1,0 +1,13 @@
+# .github/workflows/drain-agent-invitations.yml
+name: drain-agent-invitations
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -fsS "https://propertyconnectzim.vercel.app/api/cron/drain-invitations" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
